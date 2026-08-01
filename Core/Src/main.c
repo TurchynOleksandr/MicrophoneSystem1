@@ -22,6 +22,9 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
+#include "arm_math.h"
+
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -31,6 +34,8 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+
+#define FFT_SAMPLES 1024
 
 /* USER CODE END PD */
 
@@ -48,7 +53,16 @@ TIM_HandleTypeDef htim4;
 UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
+arm_rfft_fast_instance_f32 fft_handler;
 
+// Буфери для даних
+uint16_t adc_buffer[FFT_SAMPLES];            // Сирі дані з АЦП (DMA пише сюди)
+float32_t fft_input[FFT_SAMPLES];            // Вхідний масив для алгоритму Фур'є
+float32_t fft_output[FFT_SAMPLES];           // Результат (комплексні числа)
+float32_t fft_magnitudes[FFT_SAMPLES / 2];   // Фінальний спектр (амплітуди)
+
+// Прапорець готовності масиву даних
+volatile uint8_t data_ready = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -64,18 +78,33 @@ static void MX_USART1_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
+    // Перевіряємо, що це саме наш АЦП
+    if(hadc->Instance == ADC1) {
+        // Сигналізуємо головному циклу, що дані зібрано
+        data_ready = 1;
+    }
+}
 
+void Send_Spectrum_UART(void) {
+    // 1. Відправляємо маркер початку (4 байти), щоб програма на ПК зрозуміла, де старт масиву
+    uint8_t start_marker[4] = {0xAA, 0xBB, 0xCC, 0xDD};
+    HAL_UART_Transmit(&huart1, start_marker, 4, HAL_MAX_DELAY);
+
+    // 2. Рахуємо розмір даних у байтах
+    // У нас FFT_SAMPLES / 2 = 512 точок. Кожна точка типу float32_t займає 4 байти.
+    // Тобто 512 * 4 = 2048 байт.
+    uint16_t size_in_bytes = (FFT_SAMPLES / 2) * sizeof(float32_t);
+
+    // 3. Відправляємо весь масив сирими байтами
+    HAL_UART_Transmit(&huart1, (uint8_t*)fft_magnitudes, size_in_bytes, HAL_MAX_DELAY);
+}
 /* USER CODE END 0 */
 
 /**
   * @brief  The application entry point.
   * @retval int
   */
-
-extern UART_HandleTypeDef huart1;
-extern ADC_HandleTypeDef hadc1;
-uint16_t adc_buffer[16];
-
 int main(void)
 {
 
@@ -106,26 +135,54 @@ int main(void)
   MX_TIM4_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
+  // 1. Ініціалізуємо структуру ШПФ для 1024 точок
+  arm_rfft_fast_init_f32(&fft_handler, FFT_SAMPLES);
+  // 2. Запускаємо АЦП з DMA.
+  // Він буде читати напругу з A0 і складати в adc_buffer
+  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, FFT_SAMPLES);
 
+  // Якщо АЦП запускається від таймера, не забудь запустити і сам таймер!
+  // Наприклад: HAL_TIM_Base_Start(&htim4);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  char tx_buffer[100];
-  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, 16);
-  while(1)
+  while (1)
   {
-      /* USER CODE END WHILE */
+      // Чекаємо, поки DMA заповнить буфер
+      if (data_ready == 1) {
+            // Скидаємо прапорець, щоб чекати наступну порцію даних
+            data_ready = 0;
 
-      /* USER CODE BEGIN 3 */
+            // КРОК 1: Конвертуємо сирі цілі числа (uint16_t) у float32_t
+            for (int i = 0; i < FFT_SAMPLES; i++) {
+                fft_input[i] = (float32_t)adc_buffer[i];
+            }
 
-        for(uint8_t i=0;i < 16;++i){
-      	  sprintf(tx_buffer, "CH%u: %u\r\n",i, adc_buffer[i]);
-          HAL_UART_Transmit(&huart1, (uint8_t*)tx_buffer, strlen(tx_buffer), HAL_MAX_DELAY);
+            // КРОК 2: Видаляємо постійну складову (DC offset)
+            // Якщо цього не зробити, нульова частота у спектрі буде гігантською
+            float32_t mean_val;
+            arm_mean_f32(fft_input, FFT_SAMPLES, &mean_val); // Знаходимо середнє значення
+
+            for (int i = 0; i < FFT_SAMPLES; i++) {
+                fft_input[i] -= mean_val; // Віднімаємо середнє від кожного семплу
+            }
+
+            // КРОК 3: Виконуємо швидке перетворення Фур'є
+            // 0 означає "пряме перетворення" (не зворотне)
+            arm_rfft_fast_f32(&fft_handler, fft_input, fft_output, 0);
+
+            // КРОК 4: Обчислюємо реальні амплітуди частот з комплексних чисел
+            // Масив fft_magnitudes міститиме (FFT_SAMPLES / 2) = 512 точок
+            arm_cmplx_mag_f32(fft_output, fft_magnitudes, FFT_SAMPLES / 2);
+
+            Send_Spectrum_UART();
         }
-        HAL_Delay(100);
-        //HAL_Delay(500);
-      }
+
+    /* USER CODE END WHILE */
+
+    /* USER CODE BEGIN 3 */
+  }
   /* USER CODE END 3 */
 }
 
@@ -199,7 +256,7 @@ static void MX_ADC1_Init(void)
   hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
   hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc1.Init.NbrOfConversion = 16;
+  hadc1.Init.NbrOfConversion = 1;
   hadc1.Init.DMAContinuousRequests = ENABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
@@ -211,143 +268,6 @@ static void MX_ADC1_Init(void)
   */
   sConfig.Channel = ADC_CHANNEL_0;
   sConfig.Rank = 1;
-  sConfig.SamplingTime = ADC_SAMPLETIME_480CYCLES;
-  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-  */
-  sConfig.Channel = ADC_CHANNEL_1;
-  sConfig.Rank = 2;
-  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-  */
-  sConfig.Channel = ADC_CHANNEL_2;
-  sConfig.Rank = 3;
-  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-  */
-  sConfig.Channel = ADC_CHANNEL_3;
-  sConfig.Rank = 4;
-  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-  */
-  sConfig.Channel = ADC_CHANNEL_4;
-  sConfig.Rank = 5;
-  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-  */
-  sConfig.Channel = ADC_CHANNEL_5;
-  sConfig.Rank = 6;
-  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-  */
-  sConfig.Channel = ADC_CHANNEL_6;
-  sConfig.Rank = 7;
-  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-  */
-  sConfig.Channel = ADC_CHANNEL_7;
-  sConfig.Rank = 8;
-  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-  */
-  sConfig.Channel = ADC_CHANNEL_8;
-  sConfig.Rank = 9;
-  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-  */
-  sConfig.Channel = ADC_CHANNEL_9;
-  sConfig.Rank = 10;
-  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-  */
-  sConfig.Channel = ADC_CHANNEL_10;
-  sConfig.Rank = 11;
-  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-  */
-  sConfig.Channel = ADC_CHANNEL_11;
-  sConfig.Rank = 12;
-  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-  */
-  sConfig.Channel = ADC_CHANNEL_12;
-  sConfig.Rank = 13;
-  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-  */
-  sConfig.Channel = ADC_CHANNEL_13;
-  sConfig.Rank = 14;
-  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-  */
-  sConfig.Channel = ADC_CHANNEL_14;
-  sConfig.Rank = 15;
-  sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
-  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-  */
-  sConfig.Channel = ADC_CHANNEL_15;
-  sConfig.Rank = 16;
   sConfig.SamplingTime = ADC_SAMPLETIME_480CYCLES;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {

@@ -12,6 +12,16 @@ RM := rm -rf
 -include Drivers/STM32F4xx_HAL_Driver/Src/subdir.mk
 -include Core/Startup/subdir.mk
 -include Core/Src/subdir.mk
+-include CMSIS4master/CMSIS/DSP_Lib/Source/TransformFunctions/subdir.mk
+-include CMSIS4master/CMSIS/DSP_Lib/Source/SupportFunctions/subdir.mk
+-include CMSIS4master/CMSIS/DSP_Lib/Source/StatisticsFunctions/subdir.mk
+-include CMSIS4master/CMSIS/DSP_Lib/Source/MatrixFunctions/subdir.mk
+-include CMSIS4master/CMSIS/DSP_Lib/Source/FilteringFunctions/subdir.mk
+-include CMSIS4master/CMSIS/DSP_Lib/Source/FastMathFunctions/subdir.mk
+-include CMSIS4master/CMSIS/DSP_Lib/Source/ControllerFunctions/subdir.mk
+-include CMSIS4master/CMSIS/DSP_Lib/Source/ComplexMathFunctions/subdir.mk
+-include CMSIS4master/CMSIS/DSP_Lib/Source/CommonTables/subdir.mk
+-include CMSIS4master/CMSIS/DSP_Lib/Source/BasicMathFunctions/subdir.mk
 -include objects.mk
 
 ifneq ($(MAKECMDGOALS),clean)
