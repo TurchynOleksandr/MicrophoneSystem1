@@ -55,14 +55,15 @@ UART_HandleTypeDef huart1;
 /* USER CODE BEGIN PV */
 arm_rfft_fast_instance_f32 fft_handler;
 
-// Буфери для даних
-uint16_t adc_buffer[FFT_SAMPLES];            // Сирі дані з АЦП (DMA пише сюди)
-float32_t fft_input[FFT_SAMPLES];            // Вхідний масив для алгоритму Фур'є
-float32_t fft_output[FFT_SAMPLES];           // Результат (комплексні числа)
-float32_t fft_magnitudes[FFT_SAMPLES / 2];   // Фінальний спектр (амплітуди)
+// Data buffers
+uint16_t adc_buffer[FFT_SAMPLES];            // RAW data from ADC
+float32_t fft_input[FFT_SAMPLES];            // Input array for Fourier
+float32_t fft_output[FFT_SAMPLES];           // Result(complex)
+float32_t fft_magnitudes[FFT_SAMPLES / 2];   // Result specter
 
-// Прапорець готовності масиву даних
+// Flag that show the data is ready
 volatile uint8_t data_ready = 0;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -77,28 +78,30 @@ static void MX_USART1_UART_Init(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
+
 /* USER CODE BEGIN 0 */
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
-    // Перевіряємо, що це саме наш АЦП
+    // Checking the ADC source
     if(hadc->Instance == ADC1) {
-        // Сигналізуємо головному циклу, що дані зібрано
+        // Setting that data is ready
         data_ready = 1;
     }
 }
 
 void Send_Spectrum_UART(void) {
-    // 1. Відправляємо маркер початку (4 байти), щоб програма на ПК зрозуміла, де старт масиву
+    // Sending 4 start bytes
     uint8_t start_marker[4] = {0xAA, 0xBB, 0xCC, 0xDD};
     HAL_UART_Transmit(&huart1, start_marker, 4, HAL_MAX_DELAY);
 
-    // 2. Рахуємо розмір даних у байтах
-    // У нас FFT_SAMPLES / 2 = 512 точок. Кожна точка типу float32_t займає 4 байти.
-    // Тобто 512 * 4 = 2048 байт.
+    // Calculating size in bytes
+    // FFT_SAMPLES / 2 = 512 points. Every float32_t is 4 bytes.
+    // 512 * 4 = 2048 bytes
     uint16_t size_in_bytes = (FFT_SAMPLES / 2) * sizeof(float32_t);
 
-    // 3. Відправляємо весь масив сирими байтами
+    // Sendind raw bytes
     HAL_UART_Transmit(&huart1, (uint8_t*)fft_magnitudes, size_in_bytes, HAL_MAX_DELAY);
 }
+
 /* USER CODE END 0 */
 
 /**
@@ -135,45 +138,37 @@ int main(void)
   MX_TIM4_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
-  // 1. Ініціалізуємо структуру ШПФ для 1024 точок
+
   arm_rfft_fast_init_f32(&fft_handler, FFT_SAMPLES);
-  // 2. Запускаємо АЦП з DMA.
-  // Він буде читати напругу з A0 і складати в adc_buffer
+
   HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, FFT_SAMPLES);
 
-  // Якщо АЦП запускається від таймера, не забудь запустити і сам таймер!
-  // Наприклад: HAL_TIM_Base_Start(&htim4);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  while (1)
-  {
-      // Чекаємо, поки DMA заповнить буфер
+  while (1) {
       if (data_ready == 1) {
-            // Скидаємо прапорець, щоб чекати наступну порцію даних
             data_ready = 0;
 
-            // КРОК 1: Конвертуємо сирі цілі числа (uint16_t) у float32_t
+            // Converting to float
             for (int i = 0; i < FFT_SAMPLES; i++) {
                 fft_input[i] = (float32_t)adc_buffer[i];
             }
 
-            // КРОК 2: Видаляємо постійну складову (DC offset)
-            // Якщо цього не зробити, нульова частота у спектрі буде гігантською
+            // Removing DC offset
             float32_t mean_val;
-            arm_mean_f32(fft_input, FFT_SAMPLES, &mean_val); // Знаходимо середнє значення
+            arm_mean_f32(fft_input, FFT_SAMPLES, &mean_val); // Finding middle value
 
             for (int i = 0; i < FFT_SAMPLES; i++) {
-                fft_input[i] -= mean_val; // Віднімаємо середнє від кожного семплу
+                fft_input[i] -= mean_val;
             }
 
-            // КРОК 3: Виконуємо швидке перетворення Фур'є
-            // 0 означає "пряме перетворення" (не зворотне)
+            // Making FFT
+            // 0 - directed conversion
             arm_rfft_fast_f32(&fft_handler, fft_input, fft_output, 0);
 
-            // КРОК 4: Обчислюємо реальні амплітуди частот з комплексних чисел
-            // Масив fft_magnitudes міститиме (FFT_SAMPLES / 2) = 512 точок
+            // Finding real amlitude of complex values
             arm_cmplx_mag_f32(fft_output, fft_magnitudes, FFT_SAMPLES / 2);
 
             Send_Spectrum_UART();
