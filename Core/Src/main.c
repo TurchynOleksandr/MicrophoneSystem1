@@ -22,7 +22,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
-#include "arm_math.h"
+//  #include "arm_math.h"
 
 
 /* USER CODE END Includes */
@@ -53,13 +53,13 @@ TIM_HandleTypeDef htim4;
 UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
-arm_rfft_fast_instance_f32 fft_handler;
+//arm_rfft_fast_instance_f32 fft_handler;
 
 // Data buffers
 uint16_t adc_buffer[FFT_SAMPLES];            // RAW data from ADC
-float32_t fft_input[FFT_SAMPLES];            // Input array for Fourier
-float32_t fft_output[FFT_SAMPLES];           // Result(complex)
-float32_t fft_magnitudes[FFT_SAMPLES / 2];   // Result specter
+//float32_t fft_input[FFT_SAMPLES];            // Input array for Fourier
+//float32_t fft_output[FFT_SAMPLES];           // Result(complex)
+//float32_t fft_magnitudes[FFT_SAMPLES / 2];   // Result specter
 
 // Flag that show the data is ready
 volatile uint8_t data_ready = 0;
@@ -78,28 +78,25 @@ static void MX_USART1_UART_Init(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
-
 /* USER CODE BEGIN 0 */
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
-    // Checking the ADC source
     if(hadc->Instance == ADC1) {
-        // Setting that data is ready
         data_ready = 1;
     }
 }
 
-void Send_Spectrum_UART(void) {
-    // Sending 4 start bytes
+void Send_Raw_UART(void) {
+    // 1. Відправляємо маркер початку кадру (4 байти)
     uint8_t start_marker[4] = {0xAA, 0xBB, 0xCC, 0xDD};
     HAL_UART_Transmit(&huart1, start_marker, 4, HAL_MAX_DELAY);
 
-    // Calculating size in bytes
-    // FFT_SAMPLES / 2 = 512 points. Every float32_t is 4 bytes.
-    // 512 * 4 = 2048 bytes
-    uint16_t size_in_bytes = (FFT_SAMPLES / 2) * sizeof(float32_t);
+    // 2. Рахуємо розмір даних у байтах
+    // У нас FFT_SAMPLES = 1024 точок. Кожна точка типу uint16_t займає 2 байти.
+    // 1024 * 2 = 2048 байт.
+    uint16_t size_in_bytes = FFT_SAMPLES * sizeof(uint16_t);
 
-    // Sendind raw bytes
-    HAL_UART_Transmit(&huart1, (uint8_t*)fft_magnitudes, size_in_bytes, HAL_MAX_DELAY);
+    // 3. Відправляємо весь масив сирими байтами
+    HAL_UART_Transmit(&huart1, (uint8_t*)adc_buffer, size_in_bytes, HAL_MAX_DELAY);
 }
 
 /* USER CODE END 0 */
@@ -139,8 +136,6 @@ int main(void)
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
 
-  arm_rfft_fast_init_f32(&fft_handler, FFT_SAMPLES);
-
   HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, FFT_SAMPLES);
 
   /* USER CODE END 2 */
@@ -148,36 +143,16 @@ int main(void)
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1) {
-      if (data_ready == 1) {
-            data_ready = 0;
+	  if (data_ready == 1) {
+		  data_ready = 0;
 
-            // Converting to float
-            for (int i = 0; i < FFT_SAMPLES; i++) {
-                fft_input[i] = (float32_t)adc_buffer[i];
-            }
-
-            // Removing DC offset
-            float32_t mean_val;
-            arm_mean_f32(fft_input, FFT_SAMPLES, &mean_val); // Finding middle value
-
-            for (int i = 0; i < FFT_SAMPLES; i++) {
-                fft_input[i] -= mean_val;
-            }
-
-            // Making FFT
-            // 0 - directed conversion
-            arm_rfft_fast_f32(&fft_handler, fft_input, fft_output, 0);
-
-            // Finding real amlitude of complex values
-            arm_cmplx_mag_f32(fft_output, fft_magnitudes, FFT_SAMPLES / 2);
-
-            Send_Spectrum_UART();
-        }
-
+		  // Одразу відправляємо зібрані сирі дані з АЦП
+		  Send_Raw_UART();
+	  }
+  }
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-  }
   /* USER CODE END 3 */
 }
 

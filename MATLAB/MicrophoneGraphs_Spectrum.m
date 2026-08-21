@@ -97,7 +97,7 @@ try
         end
     end
 catch ME
-    disp('Виникла помилка:');
+    disp('Error:');
     disp(ME.message);
 end
 
