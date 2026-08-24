@@ -51,6 +51,7 @@ DMA_HandleTypeDef hdma_adc1;
 TIM_HandleTypeDef htim4;
 
 UART_HandleTypeDef huart1;
+DMA_HandleTypeDef hdma_usart1_tx;
 
 /* USER CODE BEGIN PV */
 //arm_rfft_fast_instance_f32 fft_handler;
@@ -86,17 +87,15 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
 }
 
 void Send_Raw_UART(void) {
-    // 1. Відправляємо маркер початку кадру (4 байти)
+    // Sending framw marker
     uint8_t start_marker[4] = {0xAA, 0xBB, 0xCC, 0xDD};
     HAL_UART_Transmit(&huart1, start_marker, 4, HAL_MAX_DELAY);
 
-    // 2. Рахуємо розмір даних у байтах
-    // У нас FFT_SAMPLES = 1024 точок. Кожна точка типу uint16_t займає 2 байти.
-    // 1024 * 2 = 2048 байт.
+    // FFT_SAMPLES = 1024 point. uint16_t is 2 bytes.
+    // 1024 * 2 = 2048 bytes.
     uint16_t size_in_bytes = FFT_SAMPLES * sizeof(uint16_t);
 
-    // 3. Відправляємо весь масив сирими байтами
-    HAL_UART_Transmit(&huart1, (uint8_t*)adc_buffer, size_in_bytes, HAL_MAX_DELAY);
+    HAL_UART_Transmit_DMA(&huart1, (uint8_t*)adc_buffer, size_in_bytes);
 }
 
 /* USER CODE END 0 */
@@ -145,9 +144,10 @@ int main(void)
   while (1) {
 	  if (data_ready == 1) {
 		  data_ready = 0;
-
-		  // Одразу відправляємо зібрані сирі дані з АЦП
-		  Send_Raw_UART();
+		  // Sending if UART ended previous send
+		  if (huart1.gState == HAL_UART_STATE_READY) {
+			  Send_Raw_UART();
+		  }
 	  }
   }
     /* USER CODE END WHILE */
@@ -238,7 +238,7 @@ static void MX_ADC1_Init(void)
   */
   sConfig.Channel = ADC_CHANNEL_0;
   sConfig.Rank = 1;
-  sConfig.SamplingTime = ADC_SAMPLETIME_480CYCLES;
+  sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -354,6 +354,9 @@ static void MX_DMA_Init(void)
   /* DMA2_Stream0_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
+  /* DMA2_Stream7_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream7_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream7_IRQn);
 
 }
 
