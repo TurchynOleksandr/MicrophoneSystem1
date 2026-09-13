@@ -35,13 +35,16 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
-#define FFT_SAMPLES 1024
+#define NUM_CHANNELS          16
+
+#define SAMPLES_PER_CHANNEL   256
+
+#define ADC_BUFFER_LEN        (NUM_CHANNELS * SAMPLES_PER_CHANNEL)
 
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
-
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -54,16 +57,18 @@ UART_HandleTypeDef huart1;
 DMA_HandleTypeDef hdma_usart1_tx;
 
 /* USER CODE BEGIN PV */
-//arm_rfft_fast_instance_f32 fft_handler;
 
-// Data buffers
-uint16_t adc_buffer[FFT_SAMPLES];            // RAW data from ADC
-//float32_t fft_input[FFT_SAMPLES];            // Input array for Fourier
-//float32_t fft_output[FFT_SAMPLES];           // Result(complex)
-//float32_t fft_magnitudes[FFT_SAMPLES / 2];   // Result specter
-
-// Flag that show the data is ready
+uint16_t adc_buffer[ADC_BUFFER_LEN];
 volatile uint8_t data_ready = 0;
+
+// Scratch buffer holding one de-interleaved channel's worth of samples,
+// used right before sending that channel's packet.
+uint16_t channel_buffer[SAMPLES_PER_CHANNEL];
+
+// Which channel's packet is currently being sent (0..NUM_CHANNELS-1).
+// Cycles through all channels once per captured block before the ADC
+// is allowed to restart.
+volatile uint8_t current_channel_to_send = 0;
 
 /* USER CODE END PV */
 
@@ -80,22 +85,36 @@ static void MX_USART1_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
-    if(hadc->Instance == ADC1) {
+    if (hadc->Instance == ADC1) {
+        HAL_ADC_Stop_DMA(&hadc1);
         data_ready = 1;
     }
 }
 
-void Send_Raw_UART(void) {
-    // Sending framw marker
-    uint8_t start_marker[4] = {0xAA, 0xBB, 0xCC, 0xDD};
-    HAL_UART_Transmit(&huart1, start_marker, 4, HAL_MAX_DELAY);
+void Send_Channel_Packet(uint8_t ch) {
+    uint8_t header[5] = {0xAA, 0xBB, 0xCC, 0xDD, ch};
+    HAL_UART_Transmit(&huart1, header, 5, HAL_MAX_DELAY);
 
-    // FFT_SAMPLES = 1024 point. uint16_t is 2 bytes.
-    // 1024 * 2 = 2048 bytes.
-    uint16_t size_in_bytes = FFT_SAMPLES * sizeof(uint16_t);
+    for (uint32_t i = 0; i < SAMPLES_PER_CHANNEL; i++) {
+        channel_buffer[i] = adc_buffer[i * NUM_CHANNELS + ch];
+    }
 
-    HAL_UART_Transmit_DMA(&huart1, (uint8_t*)adc_buffer, size_in_bytes);
+    HAL_UART_Transmit_DMA(&huart1, (uint8_t*)channel_buffer,
+                           SAMPLES_PER_CHANNEL * sizeof(uint16_t));
+}
+
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
+    if (huart->Instance == USART1) {
+        current_channel_to_send++;
+        if (current_channel_to_send < NUM_CHANNELS) {
+            Send_Channel_Packet(current_channel_to_send);
+        } else {
+            current_channel_to_send = 0;
+            HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, ADC_BUFFER_LEN);
+        }
+    }
 }
 
 /* USER CODE END 0 */
@@ -135,7 +154,7 @@ int main(void)
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
 
-  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, FFT_SAMPLES);
+  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, ADC_BUFFER_LEN);
 
   /* USER CODE END 2 */
 
@@ -143,12 +162,14 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1) {
 	  if (data_ready == 1) {
-		  data_ready = 0;
-		  // Sending if UART ended previous send
+		  // Send only if UART finished the previous transmission
 		  if (huart1.gState == HAL_UART_STATE_READY) {
-			  Send_Raw_UART();
+			  data_ready = 0;
+			  current_channel_to_send = 0;
+			  Send_Channel_Packet(0);
 		  }
 	  }
+
   }
     /* USER CODE END WHILE */
 
@@ -226,7 +247,7 @@ static void MX_ADC1_Init(void)
   hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
   hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc1.Init.NbrOfConversion = 1;
+  hadc1.Init.NbrOfConversion = 16;
   hadc1.Init.DMAContinuousRequests = ENABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
@@ -238,7 +259,142 @@ static void MX_ADC1_Init(void)
   */
   sConfig.Channel = ADC_CHANNEL_0;
   sConfig.Rank = 1;
-  sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
+  sConfig.SamplingTime = ADC_SAMPLETIME_144CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_1;
+  sConfig.Rank = 2;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_2;
+  sConfig.Rank = 3;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_3;
+  sConfig.Rank = 4;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_4;
+  sConfig.Rank = 5;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_5;
+  sConfig.Rank = 6;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_6;
+  sConfig.Rank = 7;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_7;
+  sConfig.Rank = 8;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_8;
+  sConfig.Rank = 9;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_9;
+  sConfig.Rank = 10;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_10;
+  sConfig.Rank = 11;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_11;
+  sConfig.Rank = 12;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_12;
+  sConfig.Rank = 13;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_13;
+  sConfig.Rank = 14;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_14;
+  sConfig.Rank = 15;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_15;
+  sConfig.Rank = 16;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -324,7 +480,7 @@ static void MX_USART1_UART_Init(void)
 
   /* USER CODE END USART1_Init 1 */
   huart1.Instance = USART1;
-  huart1.Init.BaudRate = 9600;
+  huart1.Init.BaudRate = 115200;
   huart1.Init.WordLength = UART_WORDLENGTH_8B;
   huart1.Init.StopBits = UART_STOPBITS_1;
   huart1.Init.Parity = UART_PARITY_NONE;

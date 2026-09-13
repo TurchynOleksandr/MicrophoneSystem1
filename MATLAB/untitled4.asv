@@ -1,0 +1,95 @@
+clear; close all; clc;
+
+%% Налаштування
+portName = "COM5";           
+baudRate = 115200;           % Швидкість має збігатися з налаштуваннями CubeMX[cite: 6]
+NUM_CHANNELS = 3;            % Оновлена кількість каналів
+SAMPLES_PER_CHANNEL = 256;   
+
+marker = uint8([0xAA 0xBB 0xCC 0xDD]);
+bytesPerFrame = NUM_CHANNELS * SAMPLES_PER_CHANNEL * 2; 
+
+%% Відкриваємо порт
+s = serialport(portName, baudRate);
+flush(s);
+
+%% Налаштування графіків (сітка 3 вертикальних вікна)
+figure('Name', 'Real-time ADC (3 Channels)', 'NumberTitle', 'off', ...
+       'Position', [100 0 800 800]);
+
+t = tiledlayout(3, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
+hLines = gobjects(NUM_CHANNELS, 1);
+t_axis = 1:SAMPLES_PER_CHANNEL;
+
+for ch = 1:NUM_CHANNELS
+    nexttile;
+    hLines(ch) = plot(t_axis, zeros(1, SAMPLES_PER_CHANNEL));
+    title(sprintf('Канал %d', ch - 1));
+    ylim([0, 4100]);
+    xlim([1, SAMPLES_PER_CHANNEL]);
+    grid on;
+end
+
+disp('Читання даних... Закрий вікно графіка, щоб зупинити.');
+
+%% Головний цикл оновлення
+try
+    while all(isgraphics(hLines))
+        found = false;
+        buf = uint8([]);
+
+        % 1. Пошук маркера
+        while ~found && all(isgraphics(hLines))
+            if s.NumBytesAvailable > 0
+                newByte = read(s, 1, "uint8");
+                buf = [buf, newByte]; %#ok<AGROW>
+
+                if length(buf) >= 4
+                    idx = strfind(buf, marker);
+                    if ~isempty(idx)
+                        buf = buf(idx(end)+4:end);
+                        found = true;
+                    end
+                end
+            else
+                pause(0.01);
+            end
+        end
+
+        if ~all(isgraphics(hLines))
+            break;
+        end
+
+        % 2. Зчитування корисних даних
+        bytesNeeded = bytesPerFrame - numel(buf);
+        while bytesNeeded > 0 && all(isgraphics(hLines))
+            if s.NumBytesAvailable > 0
+                bytesToRead = min(bytesNeeded, s.NumBytesAvailable);
+                rest = read(s, bytesToRead, "uint8");
+                buf = [buf, rest]; %#ok<AGROW>
+                bytesNeeded = bytesPerFrame - numel(buf);
+            else
+                pause(0.01);
+            end
+        end
+
+        % 3. Розподіл даних по 3 каналах
+        if all(isgraphics(hLines)) && numel(buf) == bytesPerFrame
+            raw = typecast(buf, 'uint16');
+            
+            % Розплутування масиву для 3 каналів
+            samplesMatrix = reshape(raw, NUM_CHANNELS, SAMPLES_PER_CHANNEL);
+
+            for ch = 1:NUM_CHANNELS
+                set(hLines(ch), 'YData', samplesMatrix(ch, :));
+            end
+            drawnow limitrate;
+        end
+    end
+catch ME
+    disp('Виникла помилка:');
+    disp(ME.message);
+end
+
+clear s;
+disp('Порт закрито.');

@@ -2,8 +2,8 @@ clear; close all; clc;
 
 %% Налаштування
 portName = "COM5";       % Заміни на свій порт
-baudRate = 9600;         % Швидкість UART
-N = 1024;                % Кількість семплів з АЦП
+baudRate = 115200;         % Швидкість UART
+N = 256;                % Кількість семплів з АЦП
 marker = uint8([0xAA 0xBB 0xCC 0xDD]); % Маркер початку кадру
 bytesPerFrame = N * 2;   % 2048 байт (1024 uint16 * 2 байти)
 
